@@ -1107,29 +1107,8 @@ def route_all(input_data):
     RULES = rules
     obstacles = input_data.get("obstacles", [])
     tasks = input_data.get("tasks", [])
-    # small preference to route VCC early if desired
-    # ---- NEW: user-controlled routing order by netclass ----
-    # ---------------------------
-    # Priority Order:
-    #   1) VCC nets first (optional)
-    #   2) Higher pad-density nets next
-    #   3) Then alphabetical/net_id tie-breakers
-    # ---------------------------
 
-    def _task_priority(t):
-        netname = t.get("net", "").upper()
-        net_id  = t.get("net_id", 0)
-
-        # VCC gets bucket 0, others bucket 1
-        vcc_bucket = 0 if netname == "VCC" else 1
-
-        # NEGATIVE density → higher density routes FIRST
-        density_score = -t.get("_density", 0)
-
-        return (vcc_bucket, density_score, netname, net_id)
-
-    tasks.sort(key=_task_priority)
-
+    # STEP 1: INITIALIZE GRID FIRST (FIXES NameError)
     boundary = board.get("boundary", []) or []
     layers = board.get("layers", [])
     step = float(rules.get("grid_step", 0.1))
@@ -1142,8 +1121,15 @@ def route_all(input_data):
     rasterize_obstacles(grid, rules, obstacles)
     enforce_board_edge_clearance(grid, rules)
 
-        # ---------------------------
-    # Pad Density Helper
+    # STATISTICS INITIALIZATION
+    routing_result = {
+        "routes": [],
+        "failed_connections": [],
+        "total_connections": len(tasks) 
+    }
+
+    # ---------------------------
+    # Pad Density Helper (Now has access to the 'grid' variable)
     # ---------------------------
     def _pad_density_at(x_mm, y_mm, win=3):
         """
@@ -1180,7 +1166,7 @@ def route_all(input_data):
                     if grid.in_bounds(jx, jy):
                         grid.clear_block(jx, jy, il)
 
-        # ---------------------------
+    # ---------------------------
     # Compute density score for each task
     # ---------------------------
     for t in tasks:
@@ -1197,14 +1183,35 @@ def route_all(input_data):
         # Higher = more crowded = must route first
         t["_density"] = max(d_start, d_goal)
 
-    routes = []
+    # ---------------------------
+    # Task Prioritization Logic
+    # ---------------------------
+    def _task_priority(t):
+        netname = t.get("net", "").upper()
+        net_id  = t.get("net_id", 0)
+
+        # VCC gets bucket 0, others bucket 1
+        vcc_bucket = 0 if netname == "VCC" else 1
+
+        # NEGATIVE density → higher density routes FIRST
+        density_score = -t.get("_density", 0)
+
+        return (vcc_bucket, density_score, netname, net_id)
+
+    tasks.sort(key=_task_priority)
+
+    # ---------------------------
+    # ROUTING EXECUTION LOOP
+    # ---------------------------
     for task in tasks:
         net = task.get("net")
         net_id = task.get("net_id")
         start = task.get("start")
         goal  = task.get("goal")
         if not start or not goal:
-            routes.append({"net": net, "net_id": net_id, "failed": True, "reason": "Missing start or goal"})
+            routing_result["failed_connections"].append({
+                "net": net, "net_id": net_id, "reason": "Missing start or goal"
+            })
             continue
 
         rules_net, cls_name = rules_for_net(rules, net, net_id)
@@ -1222,9 +1229,9 @@ def route_all(input_data):
         reuse_same_net_via = bool(rules_net.get("reuse_same_net_via", False))
         chosen_anchor = None
         anchor_layers = None
-        if reuse_same_net_via and routes:
+        if reuse_same_net_via and routing_result["routes"]:
             candidates = []
-            for rr in routes:
+            for rr in routing_result["routes"]:
                 if rr.get("failed") or rr.get("net_id") != net_id:
                     continue
                 for v in rr.get("vias", []):
@@ -1409,7 +1416,7 @@ def route_all(input_data):
                                     "drill":float(rules_net.get("via_drill", 0.3))
                                 })
 
-                            routes.append({
+                            routing_result["routes"].append({
                                 "net": net,
                                 "net_id": net_id,
                                 "netclass": cls_name,
@@ -1448,17 +1455,16 @@ def route_all(input_data):
                 break  # sL loop
 
         if not route_found:
-            routes.append({
+            routing_result["failed_connections"].append({
                 "net": net,
                 "net_id": net_id,
-                "failed": True,
                 "reason": last_error or "No route found",
                 "netclass": cls_name
             })
 
-    # Web summary for UI, but keep file schema identical to your sample
-    summary = _compute_summary(routes)
-    return {"routes": routes, "summary": summary}
+    # Web summary for UI
+    routing_result["summary"] = _compute_summary(routing_result["routes"])
+    return routing_result
 
 
 
