@@ -1,7 +1,27 @@
-import React, { useRef, useEffect } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 
-export default function PCBViewer({ data }) {
+const PCBViewer = forwardRef(function PCBViewer({ data }, ref) {
   const canvasRef = useRef(null);
+  const zoomRef = useRef(1);
+  const [renderTick, setRenderTick] = useState(0);
+
+  useImperativeHandle(ref, () => ({
+    zoomIn() {
+      zoomRef.current = Math.min(8, zoomRef.current * 1.2);
+      setRenderTick(t => t + 1);
+    },
+    zoomOut() {
+      zoomRef.current = Math.max(0.2, zoomRef.current / 1.2);
+      setRenderTick(t => t + 1);
+    },
+    resetZoom() {
+      zoomRef.current = 1;
+      setRenderTick(t => t + 1);
+    },
+    getZoom() {
+      return zoomRef.current;
+    }
+  }), []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -21,7 +41,8 @@ export default function PCBViewer({ data }) {
     const padding = 5;
     minX -= padding; maxX += padding; minY -= padding; maxY += padding;
 
-    const scale = Math.min(canvas.clientWidth / (maxX - minX), canvas.clientHeight / (maxY - minY));
+    const fitScale = Math.min(canvas.clientWidth / (maxX - minX), canvas.clientHeight / (maxY - minY));
+    const scale = fitScale * zoomRef.current;
     const toPx = (mm) => Math.floor(mm * scale);
     const toX = (mm) => Math.floor((mm - minX) * scale);
     const toY = (mm) => Math.floor((mm - minY) * scale);
@@ -78,7 +99,15 @@ export default function PCBViewer({ data }) {
       ctx.fill();
     });
 
-  }, [data]);
+  }, [data, renderTick]);
+
+  useEffect(() => {
+    const onResize = () => setRenderTick(t => t + 1);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   return <canvas ref={canvasRef} className="w-full h-full rounded-lg bg-slate-900 shadow-inner" />;
-}
+});
+
+export default PCBViewer;
