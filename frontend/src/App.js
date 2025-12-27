@@ -112,10 +112,12 @@ export default function App() {
         const formData = new FormData();
         formData.append("file", file);
         formData.append("user_rules_json", finalUserRules); 
+        // Prefer server-side download URL (faster than base64-in-JSON).
+        formData.append("include_file_data", "false");
 
         try {
             const response = await axios.post("http://localhost:8000/process-pcb", formData);
-            const { visualization, file_data, filename } = response.data;
+            const { visualization, file_data, filename, file_url } = response.data;
             
             setRoutingStats({
                 total: visualization.total_connections || 0,
@@ -130,25 +132,38 @@ export default function App() {
             setStatus("Success! Routing complete.");
             
             // Auto-Download logic (also saved for the bottom toolbar)
-            const binaryString = window.atob(file_data);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
+            let url = null;
+            if (file_url) {
+                // Fetch as blob so the toolbar can re-download without reprocessing.
+                const fullUrl = file_url.startsWith("http")
+                    ? file_url
+                    : `http://localhost:8000${file_url}`;
+                const zipRes = await axios.get(fullUrl, { responseType: "blob" });
+                url = window.URL.createObjectURL(zipRes.data);
+            } else if (file_data) {
+                // Backward-compatible fallback (older backend)
+                const binaryString = window.atob(file_data);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                const blob = new Blob([bytes], { type: "application/zip" });
+                url = window.URL.createObjectURL(blob);
             }
-            const blob = new Blob([bytes], { type: "application/zip" });
-            const url = window.URL.createObjectURL(blob);
 
             setZipDownload(prev => {
                 if (prev?.url) window.URL.revokeObjectURL(prev.url);
                 return { url, filename };
             });
 
-            const link = document.createElement('a');
-            link.href = url;
-            link.setAttribute('download', filename);
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
+            if (url) {
+                const link = document.createElement('a');
+                link.href = url;
+                link.setAttribute('download', filename);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
 
         } catch (error) { setStatus(`Error: Check backend logs.`); } 
         finally { setLoading(false); }
